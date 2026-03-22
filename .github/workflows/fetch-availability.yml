@@ -2,9 +2,11 @@ name: Update Availability
 
 on:
   schedule:
-    # Runs every 6 hours
     - cron: '0 */6 * * *'
-  workflow_dispatch: # allows manual trigger from GitHub UI
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   fetch-ical:
@@ -14,49 +16,53 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Fetch and convert iCal to JSON
-        env:
-          ICAL_URL: ${{ secrets.BOOKING_ICAL_URL }}
+      - name: Write Python script
         run: |
-          python3 << 'EOF'
+          cat > fetch_ical.py << 'PYEOF'
           import urllib.request
           import json
           import re
+          import os
           from datetime import datetime, timezone
 
-          ical_url = "$ICAL_URL"
+          ical_url = os.environ["ICAL_URL"]
+          print(f"Fetching: {ical_url[:60]}...")
 
-          req = urllib.request.Request(ical_url, headers={'User-Agent': 'Mozilla/5.0'})
+          req = urllib.request.Request(ical_url, headers={"User-Agent": "Mozilla/5.0"})
           with urllib.request.urlopen(req, timeout=15) as r:
-              raw = r.read().decode('utf-8', errors='ignore')
+              raw = r.read().decode("utf-8", errors="ignore")
 
-          # Parse VEVENT blocks
-          events = re.findall(r'BEGIN:VEVENT(.*?)END:VEVENT', raw, re.DOTALL)
+          events = re.findall(r"BEGIN:VEVENT(.*?)END:VEVENT", raw, re.DOTALL)
           booked = []
 
           for event in events:
-              dtstart = re.search(r'DTSTART(?:;VALUE=DATE)?:(\d{8})', event)
-              dtend   = re.search(r'DTEND(?:;VALUE=DATE)?:(\d{8})', event)
-              summary = re.search(r'SUMMARY:(.*)', event)
+              dtstart = re.search(r"DTSTART(?:;VALUE=DATE)?[^:]*:(\d{8})", event)
+              dtend   = re.search(r"DTEND(?:;VALUE=DATE)?[^:]*:(\d{8})", event)
+              summary = re.search(r"SUMMARY:(.*)", event)
               if dtstart and dtend:
                   s = dtstart.group(1)
                   e = dtend.group(1)
                   booked.append({
-                      "start": f"{s[:4]}-{s[4:6]}-{s[6:8]}",
-                      "end":   f"{e[:4]}-{e[4:6]}-{e[6:8]}",
-                      "summary": (summary.group(1).strip() if summary else "Booked")
+                      "start":   f"{s[:4]}-{s[4:6]}-{s[6:8]}",
+                      "end":     f"{e[:4]}-{e[4:6]}-{e[6:8]}",
+                      "summary": summary.group(1).strip() if summary else "Booked"
                   })
 
           output = {
               "updated": datetime.now(timezone.utc).isoformat(),
-              "booked": booked
+              "booked":  booked
           }
 
           with open("availability.json", "w") as f:
               json.dump(output, f, indent=2)
 
-          print(f"Written {len(booked)} bookings")
-          EOF
+          print(f"Done — {len(booked)} bookings written to availability.json")
+          PYEOF
+
+      - name: Fetch and convert iCal to JSON
+        env:
+          ICAL_URL: ${{ secrets.BOOKING_ICAL_URL }}
+        run: python3 fetch_ical.py
 
       - name: Commit and push JSON
         run: |
