@@ -1,0 +1,67 @@
+name: Update Availability
+
+on:
+  schedule:
+    # Runs every 6 hours
+    - cron: '0 */6 * * *'
+  workflow_dispatch: # allows manual trigger from GitHub UI
+
+jobs:
+  fetch-ical:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Fetch and convert iCal to JSON
+        env:
+          ICAL_URL: ${{ secrets.BOOKING_ICAL_URL }}
+        run: |
+          python3 << 'EOF'
+          import urllib.request
+          import json
+          import re
+          from datetime import datetime, timezone
+
+          ical_url = "$ICAL_URL"
+
+          req = urllib.request.Request(ical_url, headers={'User-Agent': 'Mozilla/5.0'})
+          with urllib.request.urlopen(req, timeout=15) as r:
+              raw = r.read().decode('utf-8', errors='ignore')
+
+          # Parse VEVENT blocks
+          events = re.findall(r'BEGIN:VEVENT(.*?)END:VEVENT', raw, re.DOTALL)
+          booked = []
+
+          for event in events:
+              dtstart = re.search(r'DTSTART(?:;VALUE=DATE)?:(\d{8})', event)
+              dtend   = re.search(r'DTEND(?:;VALUE=DATE)?:(\d{8})', event)
+              summary = re.search(r'SUMMARY:(.*)', event)
+              if dtstart and dtend:
+                  s = dtstart.group(1)
+                  e = dtend.group(1)
+                  booked.append({
+                      "start": f"{s[:4]}-{s[4:6]}-{s[6:8]}",
+                      "end":   f"{e[:4]}-{e[4:6]}-{e[6:8]}",
+                      "summary": (summary.group(1).strip() if summary else "Booked")
+                  })
+
+          output = {
+              "updated": datetime.now(timezone.utc).isoformat(),
+              "booked": booked
+          }
+
+          with open("availability.json", "w") as f:
+              json.dump(output, f, indent=2)
+
+          print(f"Written {len(booked)} bookings")
+          EOF
+
+      - name: Commit and push JSON
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add availability.json
+          git diff --staged --quiet || git commit -m "chore: update availability $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
