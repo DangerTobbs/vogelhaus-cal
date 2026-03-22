@@ -23,7 +23,7 @@ jobs:
           import json
           import re
           import os
-          from datetime import datetime, timezone
+          from datetime import datetime, timezone, date, timedelta
 
           ical_url = os.environ["ICAL_URL"]
           print(f"Fetching: {ical_url[:60]}...")
@@ -56,18 +56,140 @@ jobs:
           with open("availability.json", "w") as f:
               json.dump(output, f, indent=2)
 
-          print(f"Done — {len(booked)} bookings written to availability.json")
+          print(f"Done - {len(booked)} bookings written to availability.json")
+
+          # ── Generate static HTML calendar for Squarespace ──────────────────
+          MONTHS_DE = ["Januar","Februar","Maerz","April","Mai","Juni",
+                       "Juli","August","September","Oktober","November","Dezember"]
+          MONTHS_DE_DISPLAY = ["Januar","Februar","März","April","Mai","Juni",
+                       "Juli","August","September","Oktober","November","Dezember"]
+          DOW_DE = ["Mo","Di","Mi","Do","Fr","Sa","So"]
+
+          def parse_iso(s):
+              return date(int(s[:4]), int(s[5:7]), int(s[8:10]))
+
+          def is_booked(d, ranges):
+              for r in ranges:
+                  s = parse_iso(r["start"])
+                  e = parse_iso(r["end"])
+                  if s <= d < e:
+                      return r
+              return None
+
+          today = date.today()
+
+          def render_month(year, month, booked_ranges):
+              first = date(year, month, 1)
+              if month == 12:
+                  last = date(year+1, 1, 1) - timedelta(days=1)
+              else:
+                  last = date(year, month+1, 1) - timedelta(days=1)
+
+              start_dow = first.weekday()  # Mon=0
+              html = f'<div class="vr-month"><div class="vr-month-title">{MONTHS_DE_DISPLAY[month-1]} {year}</div>'
+              html += '<div class="vr-grid-header">'
+              for d in DOW_DE:
+                  html += f'<div class="vr-dow">{d}</div>'
+              html += '</div><div class="vr-grid">'
+
+              for _ in range(start_dow):
+                  html += '<div class="vr-day vr-empty"></div>'
+
+              for day_num in range(1, last.day + 1):
+                  d = date(year, month, day_num)
+                  booking = is_booked(d, booked_ranges)
+                  is_today = (d == today)
+                  is_past  = (d < today)
+
+                  cls = "vr-day"
+                  if booking:  cls += " vr-booked"
+                  else:        cls += " vr-free"
+                  if is_today: cls += " vr-today"
+                  if is_past:  cls += " vr-past"
+
+                  inner = f'<div class="vr-dn">{day_num}</div>'
+                  if booking:
+                      inner += '<div class="vr-lbl">Belegt</div>'
+                      start = parse_iso(booking["start"])
+                      end   = parse_iso(booking["end"])
+                      nights = (end - start).days
+                      is_first = (d == start) or (day_num == 1)
+                      if is_first and nights > 0:
+                          nw = "Nacht" if nights == 1 else "Naechte"
+                          nw_display = "Nacht" if nights == 1 else "N\u00e4chte"
+                          inner += f'<div class="vr-nights">{nights} {nw_display}</div>'
+
+                  html += f'<div class="{cls}">{inner}</div>'
+
+              html += '</div></div>'
+              return html
+
+          # Render current month + next 2 months
+          months_html = ""
+          for offset in range(3):
+              m = today.month + offset
+              y = today.year + (m - 1) // 12
+              m = ((m - 1) % 12) + 1
+              months_html += render_month(y, m, booked)
+
+          updated_str = datetime.now(timezone.utc).strftime("%-d. %-m. %Y, %H:%M UTC")
+
+          html_out = """<style>
+          .vr-wrap{font-family:Georgia,'Times New Roman',serif;max-width:680px;margin:0 auto;padding:1rem 0 2rem}
+          .vr-header{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:1.25rem;flex-wrap:wrap;gap:8px}
+          .vr-title{font-size:17px;font-weight:400;color:#3a2e1e;letter-spacing:.03em}
+          .vr-updated{font-size:11px;color:#a09080;font-style:italic;font-family:'Helvetica Neue',Arial,sans-serif}
+          .vr-legend{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:1.5rem;align-items:center}
+          .vr-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:#8c7a5e;font-family:'Helvetica Neue',Arial,sans-serif}
+          .vr-legend-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0}
+          .vr-legend-dot.vr-free{background:#e4f0e2;border:1px solid #6a9e60}
+          .vr-legend-dot.vr-booked{background:#f5e0da;border:1px solid #c8715a}
+          .vr-legend-dot.vr-today{background:none;border:1.5px solid #b08a4a}
+          .vr-month{margin-bottom:2rem}
+          .vr-month-title{font-size:15px;font-weight:400;color:#3a2e1e;letter-spacing:.04em;margin-bottom:.6rem}
+          .vr-grid-header{display:grid;grid-template-columns:repeat(7,1fr);gap:3px;margin-bottom:3px}
+          .vr-dow{text-align:center;font-size:10px;letter-spacing:.07em;color:#a09080;text-transform:uppercase;padding:4px 0;font-family:'Helvetica Neue',Arial,sans-serif}
+          .vr-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:3px}
+          .vr-day{border-radius:5px;padding:5px 4px 7px;min-height:58px;border:1px solid rgba(120,100,70,.15);background:#f5f1ea;box-sizing:border-box}
+          .vr-day.vr-empty{background:none;border-color:transparent}
+          .vr-day.vr-free{background:#e4f0e2;border-color:#6a9e60}
+          .vr-day.vr-booked{background:#f5e0da;border-color:#c8715a}
+          .vr-day.vr-today{outline:2px solid #b08a4a;outline-offset:-1px}
+          .vr-day.vr-past{opacity:.42}
+          .vr-dn{font-size:12px;color:#3a2e1e;font-family:'Helvetica Neue',Arial,sans-serif;line-height:1}
+          .vr-day.vr-booked .vr-dn{color:#7a2e1a}
+          .vr-day.vr-free .vr-dn{color:#2a5e24}
+          .vr-lbl{font-size:8px;text-transform:uppercase;letter-spacing:.05em;margin-top:5px;font-family:'Helvetica Neue',Arial,sans-serif;color:#7a2e1a;line-height:1.2}
+          .vr-nights{font-size:8px;margin-top:2px;font-family:'Helvetica Neue',Arial,sans-serif;color:#7a2e1a;opacity:.8;line-height:1.2}
+          @media(max-width:480px){.vr-day{min-height:46px;padding:4px 3px 5px}.vr-dn{font-size:11px}.vr-lbl,.vr-nights{font-size:7px}}
+          </style>
+          <div class="vr-wrap">
+          <div class="vr-header">
+          <div class="vr-title">Verf\u00fcgbarkeit \u00b7 Vogelhaus Rosenthal</div>
+          <div class="vr-updated">Aktualisiert: """ + updated_str + """</div>
+          </div>
+          <div class="vr-legend">
+          <div class="vr-legend-item"><div class="vr-legend-dot vr-free"></div><span>Verf\u00fcgbar</span></div>
+          <div class="vr-legend-item"><div class="vr-legend-dot vr-booked"></div><span>Belegt</span></div>
+          <div class="vr-legend-item"><div class="vr-legend-dot vr-today"></div><span>Heute</span></div>
+          </div>
+          """ + months_html + """</div>"""
+
+          with open("squarespace-calendar.html", "w", encoding="utf-8") as f:
+              f.write(html_out)
+
+          print("Static calendar written to squarespace-calendar.html")
           PYEOF
 
-      - name: Fetch and convert iCal to JSON
+      - name: Fetch and convert iCal to JSON + generate static HTML
         env:
           ICAL_URL: ${{ secrets.BOOKING_ICAL_URL }}
         run: python3 fetch_ical.py
 
-      - name: Commit and push JSON
+      - name: Commit and push files
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add availability.json
+          git add availability.json squarespace-calendar.html
           git diff --staged --quiet || git commit -m "chore: update availability $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git push
